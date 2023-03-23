@@ -45,6 +45,12 @@ pub struct Float<'ctx> {
     pub(crate) z3_ast: Z3_ast,
 }
 
+/// [`Ast`] node representing a rounding mode.
+pub struct RoundingMode<'ctx> {
+    pub(crate) ctx: &'ctx Context,
+    pub(crate) z3_ast: Z3_ast,
+}
+
 /// [`Ast`] node representing a string value.
 pub struct String<'ctx> {
     pub(crate) ctx: &'ctx Context,
@@ -141,26 +147,6 @@ macro_rules! binop {
                 unsafe {
                     <$retty>::wrap(self.ctx, {
                         $z3fn(self.ctx.z3_ctx, self.z3_ast, other.z3_ast)
-                    })
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! trinop {
-    (
-        $(
-            $( #[ $attr:meta ] )* $f:ident ( $z3fn:ident, $retty:ty ) ;
-        )*
-    ) => {
-        $(
-            $( #[ $attr ] )*
-            pub fn $f(&self, a: &Self, b: &Self) -> $retty {
-                assert!((self.ctx == a.ctx) && (a.ctx == b.ctx));
-                unsafe {
-                    <$retty>::wrap(self.ctx, {
-                        $z3fn(self.ctx.z3_ctx, self.z3_ast, a.z3_ast, b.z3_ast)
                     })
                 }
             }
@@ -542,6 +528,8 @@ impl_ast!(Real);
 impl_from_try_into_dynamic!(Real, as_real);
 impl_ast!(Float);
 impl_from_try_into_dynamic!(Float, as_float);
+impl_ast!(RoundingMode);
+impl_from_try_into_dynamic!(RoundingMode, as_rounding_mode);
 impl_ast!(String);
 impl_from_try_into_dynamic!(String, as_string);
 impl_ast!(BV);
@@ -597,7 +585,27 @@ impl<'ctx> Real<'ctx> {
 }
 
 impl<'ctx> Float<'ctx> {
-    // Create a 32-bit (IEEE-754) Float [`Ast`] from a rust f32
+		/// Create a (IEEE-754) Float [`Ast`] from three BV expressions.
+		/// 
+		/// `sgn` is required to be a bit-vector of size 1.
+		/// `sig` and `exp` are required to be longer than 1 and 2 wide, respectively.
+		///
+		/// The resulting expression's Float sort is automatically determined from
+		/// the bit-vector sizes of the arguments. The exponent is assumed to be in
+		/// IEEE-754 biased representation.
+		pub fn from_bv(ctx: &'ctx Context, sgn: &BV<'ctx>, exp: &BV<'ctx>, sig: &BV<'ctx>) -> Float<'ctx> {
+				assert!(ctx == sgn.ctx && sgn.ctx == exp.ctx && exp.ctx == sig.ctx);
+				assert!(sgn.get_size() == 1);
+				assert!(sig.get_size() > 1);
+				assert!(exp.get_size() > 2);
+				unsafe {
+						Self::wrap(ctx, {
+								Z3_mk_fpa_fp(ctx.z3_ctx, sgn.z3_ast, exp.z3_ast, sig.z3_ast)
+						})
+				}
+		}
+
+    /// Create a 32-bit (IEEE-754) Float [`Ast`] from a rust f32
     pub fn from_f32(ctx: &'ctx Context, value: f32) -> Float<'ctx> {
         let sort = Sort::float32(ctx);
         unsafe {
@@ -607,7 +615,7 @@ impl<'ctx> Float<'ctx> {
         }
     }
 
-    // Create a 364-bit (IEEE-754) Float [`Ast`] from a rust f64
+    /// Create a 64-bit (IEEE-754) Float [`Ast`] from a rust f64
     pub fn from_f64(ctx: &'ctx Context, value: f64) -> Float<'ctx> {
         let sort = Sort::double(ctx);
         unsafe {
@@ -1026,56 +1034,291 @@ impl<'ctx> Float<'ctx> {
         }
     }
 
-    // returns RoundingMode towards zero
-    pub fn round_towards_zero(ctx: &'ctx Context) -> Float<'ctx> {
-        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_zero(ctx.z3_ctx)) }
-    }
+		/// Create a floating-point NaN of sort `s`.
+		pub fn nan(ctx: &'ctx Context, s: &Sort<'ctx>) -> Float<'ctx> {
+				assert!(ctx == s.ctx);
+				unsafe {
+						Self::wrap(ctx, {
+								Z3_mk_fpa_nan(ctx.z3_ctx, s.z3_sort)
+						})
+				}
+		}
 
-    // returns RoundingMode towards negative
-    pub fn round_towards_negative(ctx: &'ctx Context) -> Float<'ctx> {
-        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_negative(ctx.z3_ctx)) }
-    }
+		/// Create a floating-point infinity of sort `s`.
+		///
+		/// When `negative` is true, -oo will be generated instead of +oo.
+		pub fn infinity(ctx: &'ctx Context, s: &Sort<'ctx>, negative: bool) -> Float<'ctx> {
+				assert!(ctx == s.ctx);
+				unsafe {
+						Self::wrap(ctx, {
+								Z3_mk_fpa_inf(ctx.z3_ctx, s.z3_sort, negative)
+						})
+				}
+		}
 
-    // returns RoundingMode towards positive
-    pub fn round_towards_positive(ctx: &'ctx Context) -> Float<'ctx> {
-        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_positive(ctx.z3_ctx)) }
-    }
-
-    // Add two floats of the same size, rounding towards zero
-    pub fn add_towards_zero(&self, other: &Self) -> Float<'ctx> {
-        Self::round_towards_zero(self.ctx).add(self, other)
-    }
-
-    // Subtract two floats of the same size, rounding towards zero
-    pub fn sub_towards_zero(&self, other: &Self) -> Float<'ctx> {
-        Self::round_towards_zero(self.ctx).sub(self, other)
-    }
-
-    // Multiply two floats of the same size, rounding towards zero
-    pub fn mul_towards_zero(&self, other: &Self) -> Float<'ctx> {
-        Self::round_towards_zero(self.ctx).mul(self, other)
-    }
-
-    // Divide two floats of the same size, rounding towards zero
-    pub fn div_towards_zero(&self, other: &Self) -> Float<'ctx> {
-        Self::round_towards_zero(self.ctx).div(self, other)
-    }
+		/// Create a floating-point zero of sort 's'.
+		///
+		/// When `negative` is true, -zero will be generated instead of +zero.
+		pub fn zero(ctx: &'ctx Context, s: &Sort<'ctx>, negative: bool) -> Float<'ctx> {
+				assert!(ctx == s.ctx);
+				unsafe {
+						Self::wrap(ctx, {
+								Z3_mk_fpa_zero(ctx.z3_ctx, s.z3_sort, negative)
+						})
+				}
+		}
 
     unop! {
         unary_abs(Z3_mk_fpa_abs, Self);
         unary_neg(Z3_mk_fpa_neg, Self);
     }
+
+		/// Floating-point addition.
+		pub fn add(&self, other: &Self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == other.ctx && other.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_add(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, other.z3_ast)
+						})
+				}
+		}
+
+		/// Floating-point subtraction.
+		pub fn sub(&self, other: &Self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == other.ctx && other.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_sub(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, other.z3_ast)
+						})
+				}
+		}
+		
+		/// Floating-point multiplication.
+		pub fn mul(&self, other: &Self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == other.ctx && other.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_mul(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, other.z3_ast)
+						})
+				}
+		}
+		
+		/// Floating-point division.
+		pub fn div(&self, other: &Self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == other.ctx && other.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_div(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, other.z3_ast)
+						})
+				}
+		}
+
+		/// Floating-point fused multiply-add.
+		/// The result is `round((self * x) + y)`
+		pub fn fma(&self, x: &Self, y: &Self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == x.ctx && x.ctx == y.ctx && y.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_fma(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, x.z3_ast, y.z3_ast)
+						})
+				}
+		}
+
+		binop! {
+				rem(Z3_mk_fpa_rem, Float<'ctx>);
+				min(Z3_mk_fpa_min, Float<'ctx>);
+				max(Z3_mk_fpa_max, Float<'ctx>);
+		}
+
+		/// Floating-point square root.
+		pub fn sqrt(&self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_sqrt(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast)
+						})
+				}
+		}
+
     binop! {
         lt(Z3_mk_fpa_lt, Bool<'ctx>);
         le(Z3_mk_fpa_leq, Bool<'ctx>);
         gt(Z3_mk_fpa_gt, Bool<'ctx>);
         ge(Z3_mk_fpa_geq, Bool<'ctx>);
+				eq(Z3_mk_fpa_eq, Bool<'ctx>);
     }
-    trinop! {
-        add(Z3_mk_fpa_add, Self);
-        sub(Z3_mk_fpa_sub, Self);
-        mul(Z3_mk_fpa_mul, Self);
-        div(Z3_mk_fpa_div, Self);
+
+		/// Rounds a floating-point number to the closest integer, again
+		/// represented as a floating-point number.
+		pub fn round_to_integral(&self, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(self.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_round_to_integral(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast)
+						})
+				}
+		}
+
+		unop! {
+				is_normal(Z3_mk_fpa_is_normal, Bool<'ctx>);
+				is_subnormal(Z3_mk_fpa_is_subnormal, Bool<'ctx>);
+				is_zero(Z3_mk_fpa_is_zero, Bool<'ctx>);
+				is_infinite(Z3_mk_fpa_is_infinite, Bool<'ctx>);
+				is_nan(Z3_mk_fpa_is_nan, Bool<'ctx>);
+				is_negative(Z3_mk_fpa_is_negative, Bool<'ctx>);
+				is_positive(Z3_mk_fpa_is_positive, Bool<'ctx>);
+		}
+
+		/// Converts a IEEE 754-2008 bit-vector into a floating-point number.
+		///
+		/// `s` must be a FloatingPoint sort and the bitvector size must be equal to
+		/// `ebits + sbits` from `s`. 
+		pub fn from_ieee_bv(bv: &BV<'ctx>, s: &Sort<'ctx>) -> Float<'ctx> {
+				assert!(s.kind() == SortKind::FloatingPoint);
+				assert!(bv.get_size() == (s.float_exponent_size().unwrap() + s.float_significand_size().unwrap()));
+				assert!(bv.ctx == s.ctx);
+				unsafe {
+						Self::wrap(bv.ctx, {
+								Z3_mk_fpa_to_fp_bv(bv.ctx.z3_ctx, bv.z3_ast, s.z3_sort)
+						})
+				}
+		}
+
+		/// Converts a Float into a Float of a different sort.
+		pub fn change_fp_type(&self, s: &Sort<'ctx>, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(s.kind() == SortKind::FloatingPoint);
+				assert!(self.ctx == s.ctx && s.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(self.ctx, {
+								Z3_mk_fpa_to_fp_float(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, s.z3_sort)
+						})
+				}
+		}
+
+		/// Creates a [`Float`] from a [`Real`].
+		pub fn from_real(x: &Real<'ctx>, s: &Sort<'ctx>, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(s.kind() == SortKind::FloatingPoint);
+				assert!(x.ctx == s.ctx && s.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(x.ctx, {
+								Z3_mk_fpa_to_fp_real(x.ctx.z3_ctx, rm.z3_ast, x.z3_ast, s.z3_sort)
+						})
+				}
+		}
+
+		/// Creates a [`Float`] from a 2's complemented signed [`BV`].
+		pub fn from_2s_complement_signed_bv(bv: &BV<'ctx>, s: &Sort<'ctx>, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(s.kind() == SortKind::FloatingPoint);
+				assert!(bv.ctx == s.ctx && s.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(bv.ctx, {
+								Z3_mk_fpa_to_fp_signed(bv.ctx.z3_ctx, rm.z3_ast, bv.z3_ast, s.z3_sort)
+						})
+				}
+		}
+
+		/// Creates a [`Float`] from a 2's complemented unsigned [`BV`].
+		pub fn from_2s_complement_unsigned_bv(bv: &BV<'ctx>, s: &Sort<'ctx>, rm: &RoundingMode<'ctx>) -> Float<'ctx> {
+				assert!(s.kind() == SortKind::FloatingPoint);
+				assert!(bv.ctx == s.ctx && s.ctx == rm.ctx);
+				unsafe {
+						Self::wrap(bv.ctx, {
+								Z3_mk_fpa_to_fp_unsigned(bv.ctx.z3_ctx, rm.z3_ast, bv.z3_ast, s.z3_sort)
+						})
+				}
+		}
+
+		/// Creates an *unsigned* [`BV`] from a [`Float`].
+		// NOTE: using u32 instead of std::os::raw::c_uint, which is apparently
+		// convention in this library
+		pub fn to_unsigned_bv(&self, sz: u32, rm: &RoundingMode<'ctx>) -> BV<'ctx> {
+				assert!(self.ctx == rm.ctx);
+				unsafe {
+						BV::wrap(self.ctx, {
+								Z3_mk_fpa_to_ubv(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, sz)
+						})
+				}
+		}
+
+		/// Creates a *signed* [`BV`] from a [`Float`].
+		pub fn to_signed_bv(&self, sz: u32, rm: &RoundingMode<'ctx>) -> BV<'ctx> {
+				assert!(self.ctx == rm.ctx);
+				unsafe {
+						BV::wrap(self.ctx, {
+								Z3_mk_fpa_to_sbv(self.ctx.z3_ctx, rm.z3_ast, self.z3_ast, sz)
+						})
+				}
+		}
+
+		/// Creates a [`Real`] from a [`Float`].
+		pub fn to_real(&self) -> Real<'ctx> {
+				unsafe {
+						Real::wrap(self.ctx, {
+								Z3_mk_fpa_to_real(self.ctx.z3_ctx, self.z3_ast)
+						})
+				}
+		}
+
+		/// Creates an IEEE 754-2008 formatted [`BV`] from a [`Float`].
+		/// The size of the resulting [`BV`] is automatically determined.
+		pub fn to_ieee_bv(&self) -> BV<'ctx> {
+				unsafe {
+						BV::wrap(self.ctx, {
+								Z3_mk_fpa_to_ieee_bv(self.ctx.z3_ctx, self.z3_ast)
+						})
+				}
+		}
+}
+
+impl<'ctx> RoundingMode<'ctx> {
+		/// Create a numeral of RoundingMode sort which represents the NearestTiesToEven rounding mode.
+		pub fn round_nearest_ties_to_even(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+				unsafe { Self::wrap(ctx, Z3_mk_fpa_round_nearest_ties_to_even(ctx.z3_ctx)) }
+		}
+
+		/// Create a numeral of RoundingMode sort which represents the NearestTiesToEven rounding mode.
+		pub fn rne(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+				unsafe { Self::wrap(ctx, Z3_mk_fpa_rne(ctx.z3_ctx)) }
+		}
+
+    /// Create a numeral of RoundingMode sort which represents the NearestTiesToAway rounding mode.
+		pub fn round_nearest_ties_to_away(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+				unsafe { Self::wrap(ctx, Z3_mk_fpa_round_nearest_ties_to_away(ctx.z3_ctx)) }
+		}
+
+    /// Create a numeral of RoundingMode sort which represents the NearestTiesToAway rounding mode.
+		pub fn rna(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+				unsafe { Self::wrap(ctx, Z3_mk_fpa_rna(ctx.z3_ctx)) }
+		}
+
+    // returns RoundingMode towards zero
+    pub fn round_towards_zero(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_zero(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards zero
+    pub fn rtz(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_rtz(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards negative
+    pub fn round_towards_negative(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_negative(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards negative
+    pub fn rtn(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_rtn(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards positive
+    pub fn round_towards_positive(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_positive(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards positive
+    pub fn rtp(ctx: &'ctx Context) -> RoundingMode<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_rtp(ctx.z3_ctx)) }
     }
 }
 
@@ -1653,6 +1896,14 @@ impl<'ctx> Dynamic<'ctx> {
             _ => None,
         }
     }
+
+		/// Returns `None` if the `Dynamic` is not actually a `RoundingMode`
+		pub fn as_rounding_mode(&self) -> Option<RoundingMode<'ctx>> {
+				match self.sort_kind() {
+						SortKind::RoundingMode => Some(unsafe { RoundingMode::wrap(self.ctx, self.z3_ast) }),
+						_ => None,
+				}
+		}
 
     /// Returns `None` if the `Dynamic` is not actually a `String`
     pub fn as_string(&self) -> Option<String<'ctx>> {

@@ -360,7 +360,8 @@ fn test_float_add() {
     let solver = Solver::new(&ctx);
 
     let x = ast::Float::new_const_float32(&ctx, "x");
-    let x_plus_one = ast::Float::round_towards_zero(&ctx).add(&x, &ast::Float::from_f32(&ctx, 1.0));
+		let rm = ast::RoundingMode::rtz(&ctx);
+    let x_plus_one = x.add(&ast::Float::from_f32(&ctx, 1.0), &rm);
     let y = ast::Float::from_f32(&ctx, 3.14);
 
     solver.assert(&x_plus_one._eq(&y));

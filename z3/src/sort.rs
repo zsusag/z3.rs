@@ -39,6 +39,10 @@ impl<'ctx> Sort<'ctx> {
         unsafe { Self::wrap(ctx, Z3_mk_fpa_sort(ctx.z3_ctx, ebits, sbits)) }
     }
 
+		pub fn rounding_mode(ctx: &'ctx Context) -> Sort<'ctx> {
+				unsafe { Self::wrap(ctx, Z3_mk_fpa_rounding_mode_sort(ctx.z3_ctx)) }
+		}
+
     pub fn float32(ctx: &'ctx Context) -> Sort<'ctx> {
         unsafe { Self::wrap(ctx, Z3_mk_fpa_sort(ctx.z3_ctx, 8, 24)) }
     }
